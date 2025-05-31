@@ -7,6 +7,11 @@ import datetime, time
 import traceback
 import shutil
 import pandas as pd
+#import openpyxl
+
+import math
+
+import numpy as np
 
 #from pandas import json_normalize
 
@@ -277,8 +282,8 @@ def do_getKISaction():
     api_utils.InsertLog('Получить из КИС активные задания. Всего заданий: ' + str(len(df_action)))
 
     if not df_action.empty:
-        # Отправка каталога (1) и выгрузка кассиров (2)
-        df_files = df_action.loc[((df_action['TaskID'] == 1) | (df_action['TaskID'] == 2))]
+        # Отправка каталога (1), Выгрузка кассиров (2), Отправка МРЦ (5)
+        df_files = df_action.loc[((df_action['TaskID'] == 1) | (df_action['TaskID'] == 2) | (df_action['TaskID'] == 5))]
         if not df_files.empty:
             send_files_to_crystals(df_files)
 
@@ -290,10 +295,21 @@ def do_getKISaction():
 
             api_utils.InsertLog('Экспорт. Отправка марок в set mark. ActionID=' + str(ActionID) +
                                 ', SubObjectID=' + str(SubObjectID))
-            Error = send_files_to_setmark(SubObjectID)
 
-            # Обновить ответ в КИС
-            spCrystals_UpdateAction(ActionID, 3, SubObjectID, None, Error)
+            try:
+                Error = send_files_to_setmark(SubObjectID)
+
+                # Обновить ответ в КИС
+                spCrystals_UpdateAction(ActionID, 3, SubObjectID, None, Error)
+            except:
+                traceback.print_exc()
+                startTime = datetime.datetime.now()
+                t_log = startTime.strftime('%d.%m.%Y %H:%M:%S')
+                log = open('./src/Logs/' + str(YLog) + '/Logs_' + str(MLog) + '.txt', 'a+', encoding="utf-8")
+                log.write(t_log + ' ## Ошибка при отправке марок в set mark')
+                traceback.print_exc(file=log)
+                log.close()
+                time.sleep(1)
 
 
 # Обновить задание в КИС
@@ -391,8 +407,15 @@ def send_files_to_crystals(df_action): #ActionID, TaskID, SubObjectID, FileName)
                 SubObjectID = df_task['SubObjectID'].values[0]
 
                 # Выгрузка каталога (getGoodsCatalog)
-                if TaskID == 1:
-                    api_utils.InsertLog('Экспорт. Выгрузка каталога')
+                if TaskID in (1, 5):
+                    if TaskID == 1:
+                        api_utils.InsertLog('Экспорт. Выгрузка каталога')
+                    elif TaskID == 5:
+                        api_utils.InsertLog('Экспорт. Выгрузка МРЦ')
+                        # МРЦ находится внутри каталога
+                        # Ограничения минимальной цены <min-price-restriction>
+                        # <min-price-restriction id="minprice0000437" subject-type="GOOD" subject-code="0100129" value="300">
+
                     Error = send_goods_catalog(url_srv, file_name, file)
                     print('Error=',Error, type(Error))
                     spCrystals_UpdateAction(ActionID, TaskID, SubObjectID, file_name, Error)
@@ -519,27 +542,29 @@ def send_files_to_setmark(SubObjectID, Mark = None):
     # https://crystals.atlassian.net/wiki/spaces/SR10SUPPORT/pages/785940525/SetMark+API+ERP
 
     # Получить сервер set mark из подобъектов
-    query_srv_setmark = 'select  ServerSetMark from  ObjectReg1 where ID = ' + str(SubObjectID)
+    query_srv_setmark = 'select ServerSetMark from ObjectReg1 where ID = ' + str(SubObjectID)
     url_srv_setmark = api_utils.select_query(query_srv_setmark, login_sql, password_sql, server_sql, driver_sql,
                                              database, isList=True)
 
     if not url_srv_setmark:
-        api_utils.InsertLog('В подобъекте ' + str(SubObjectID) + ' не заполнен сервер set makr')
+        api_utils.InsertLog('В подобъекте ' + str(SubObjectID) + ' не заполнен сервер set mark')
         return 1
     else:
         url_srv_setmark = url_srv_setmark[0]
 
     api_utils.InsertLog('url_srv_setmark = ' + str(url_srv_setmark))
+    api_utils.InsertLog('Забираем марки из базы')
 
     # Если указали марку - выгрузить только её
-    filter = " and SubObjectID = " + str(SubObjectID)
-    if Mark:
-        filter = filter + " and E.MarkCode = '" + str(Mark) + "'"
+    # filter = " and SubObjectID = " + str(SubObjectID)
+    # if Mark:
+    #     filter = filter + " and E.MarkCode = '" + str(Mark) + "'"
+    #
+    # query_mark = "select distinct MarkCode as excise, AlcCode as alcocode, isnull(PackGoodsID,GoodsID) as item " \
+    #         " from egais_RestBCode_v3View" \
+    #         " where isnull(Quantity,0)<>0 " + filter
 
-    api_utils.InsertLog('Забираем марки из базы')
-    query_mark = "select distinct MarkCode as excise, AlcCode as alcocode, GoodsID as item " \
-            " from egais_RestBCode_v3View" \
-            " where isnull(Quantity,0)<>0 " + filter
+    query_mark = "exec spCrystals_LoadPOS_Mark " + str(SubObjectID)
 
     df_mark_all = api_utils.select_query(query_mark, login_sql, password_sql, server_sql, driver_sql, database, isList=False)
 
@@ -630,9 +655,9 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
     # result = client.service.getPurchasesByPeriod('2024-09-03', '2024-09-03T23:59:00.000')
     file_xml = result.decode("utf-8")
     # print(file_xml)
-    #
-    # Сохранить в файл
-    # with open('out_cheque_18102024.xml', 'w', encoding='utf-8') as f:
+    # #
+    # # Сохранить в файл
+    # with open('out_cheque_21052025.xml', 'w', encoding='utf-8') as f:
     #     f.write(file_xml)
     #     f.close()
     #
@@ -640,7 +665,7 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
 
     # Преобразовать xml в словарь
     dict_data = xmltodict.parse(file_xml)
-    print(dict_data)
+    # print(dict_data)
     perchases_count = dict_data.get('purchases')["@count"]
     api_utils.InsertLog('Всего продаж: ' + str(perchases_count))
 
@@ -652,7 +677,7 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
 
     # print(df_purchase)
     # print('purchases2*************')
-    # df_purchase.to_excel("df_purchase_18102024.xlsx")
+    # df_purchase.to_excel("df_purchase_23122024.xlsx")
     # sys.exit()
 
     # Чтобы забрать ФИО кассира
@@ -692,7 +717,7 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
     # sys.exit()
 
     # Марки
-    df_exciseBottles_all = pd.DataFrame(columns=['shop', 'cash', 'shift', 'number', 'fiscalnum'])
+    df_exciseBottles_all = pd.DataFrame(columns=['shop', 'cash', 'shift', 'number', 'factorynum'])
 
     # Соберём данные чеков, позиций и оплат в разные df
     for i, row in df_purchase.iterrows():
@@ -706,8 +731,12 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         cash = df_purchase.iloc[i]['@cash']
         shift = df_purchase.iloc[i]['@shift']
         number = df_purchase.iloc[i]['@number']
-        fiscalnum = df_purchase.iloc[i]['@fiscalnum']
-        print(shop, cash, shift, number, fiscalnum)
+
+        # STEEL от 24.04.2025 ВМЕСТО fiscalnum должен браться factorynum - "Заводской номер"
+        factorynum = df_purchase.iloc[i]['@factorynum']
+
+        #fiscalnum = df_purchase.iloc[i]['@fiscalnum']
+        #! print(shop, cash, shift, number, factorynum)
 
         # Свойства - взять ФИО кассира
         CASHIER_NAME = None
@@ -725,8 +754,8 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         # Если позиция одна, то колонки 'positions.position' не будет
         if 'positions.position' in df_purchase.columns:
             json_positions = json.loads(json.dumps(row['positions.position'], indent=4))
-            print('json_positions==',json_positions)
-            print(type(json_positions))
+            #! print('json_positions==',json_positions)
+            #! print(type(json_positions))
             # Когда одновременно есть продажи с одной позицией и с несколькими:
             # 1) Если только одна позиция - то значения в отдельных полях (при этом колонка 'payments.payment' float)
             # 2) Если несколько - то в колнке positions.position есть данные
@@ -770,7 +799,7 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         df_positions['cash'] = cash
         df_positions['shift'] = shift
         df_positions['number'] = number
-        df_positions['fiscalnum'] = fiscalnum
+        df_positions['factorynum'] = factorynum
         # !!! Убрать дубликаты
         df_positions = df_positions.drop_duplicates()
 
@@ -792,8 +821,8 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         # Если оплата только одна, то колонки 'payments.payment' не будет
         if 'payments.payment' in df_purchase.columns:
             json_payment = json.loads(json.dumps(row['payments.payment'], indent=4))
-            print('json_payment==', json_payment)
-            print(type(json_payment))
+            #! print('json_payment==', json_payment)
+            #! print(type(json_payment))
             # Когда одновременно есть продажи с одной оплатой и с несколькими:
             # 1) Если только одна оплата - то значения в отдельных полях (при этом колонка 'payments.payment' float)
             # 2) Если несколько - то в колнке payments.payment есть данные
@@ -812,9 +841,9 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
                 except:
                     pp_key = row['payments.payment.plugin-property.@key']
                     pp_value = row['payments.payment.plugin-property.@value']
-                    print(pp_key, pp_value)
+                    #! print(pp_key, pp_value)
                     pp_dict = {'@key': pp_key, '@value': pp_value}
-                    print(type(pp_dict), pp_dict)
+                    #! print(type(pp_dict), pp_dict)
                     if pp_key:
                         df_payment = pd.DataFrame({"@order": [row['payments.payment.@order']],
                                                    "@typeClass": [row['payments.payment.@typeClass']],
@@ -834,9 +863,9 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
                 # Если только 1 свойство, то будут payments.payment.plugin-property.@key, payments.payment.plugin-property.@value
                 pp_key = row['payments.payment.plugin-property.@key']
                 pp_value = row['payments.payment.plugin-property.@value']
-                print(pp_key, pp_value)
+                #! print(pp_key, pp_value)
                 pp_dict = {'@key': pp_key, '@value': pp_value}
-                print(type(pp_dict), pp_dict)
+                #! print(type(pp_dict), pp_dict)
             except:
                 pp_key = None
 
@@ -853,7 +882,7 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
                                            "@description": [row['payments.payment.@description']],
                                            "plugin-property": [row['payments.payment.plugin-property']]})
 
-        # print('df_payment==', df_payment)
+        #print('df_payment==', df_payment)
         # df_payment.to_excel('df_payment.xlsx')
         # sys.exit()
 
@@ -872,33 +901,37 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         df_payment['cash'] = cash
         df_payment['shift'] = shift
         df_payment['number'] = number
-        df_payment['fiscalnum'] = fiscalnum
+        df_payment['factorynum'] = factorynum
 
         # Забираем данные из дополнительных свойств (plugin-property) и записываем в нужные колонки df
         for p, row_p in df_payment.iterrows():
             # print(p, row_p)
             # print('**********************')
-            # print(row_p['plugin-property'])
-            if isinstance(row_p['plugin-property'], dict):
-                #print('key=' + j['@key'], '; value=' + str(j['@value']))
-                if row_p['plugin-property']['@key'] in add_column_payment:
-                    key = row_p['plugin-property']['@key']
-                    value = row_p['plugin-property']['@value']
-                    print(key + '  ***====***', value)
-                    df_payment.loc[p, key] = value
-                    #print(df_payment)
 
-            if isinstance(row_p['plugin-property'], list):
-                #print('LIST_j=',row_p['plugin-property'])
-                for l in row_p['plugin-property']:
-                    print('l=',l)
-                    if l['@key'] in add_column_payment:
-                        key = l['@key']
-                        value = l['@value']
-                        print(key + '  ***====***', value)
+
+            if 'plugin-property' in row_p:
+                # print(row_p['plugin-property'])
+                if isinstance(row_p['plugin-property'], dict):
+                    #print('key=' + j['@key'], '; value=' + str(j['@value']))
+                    if row_p['plugin-property']['@key'] in add_column_payment:
+                        key = row_p['plugin-property']['@key']
+                        value = row_p['plugin-property']['@value']
+                        #! print(key + '  ***====***', value)
                         df_payment.loc[p, key] = value
+                        #print(df_payment)
 
-        del df_payment['plugin-property']
+                if isinstance(row_p['plugin-property'], list):
+                    #print('LIST_j=',row_p['plugin-property'])
+                    for l in row_p['plugin-property']:
+                        #! print('l=',l)
+                        if l['@key'] in add_column_payment:
+                            key = l['@key']
+                            value = l['@value']
+                            #! print(key + '  ***====***', value)
+                            df_payment.loc[p, key] = value
+
+        if 'plugin-property' in df_payment:
+            del df_payment['plugin-property']
 
         # Переименовать колонки у оплат
         df_payment.rename(columns={'@order': 'order', '@typeClass': 'typeClass',
@@ -912,36 +945,43 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         # Марки
         # Если есть в колонках продаж exciseBottles
         if not df_purchase.filter(regex="^exciseBottles").empty:
-            if 'exciseBottles.bottle' in df_purchase.columns:
-                json_exciseBottles = json.loads(json.dumps(row['exciseBottles.bottle'], indent=4))
-                print('json_payment==', json_exciseBottles)
-                print(type(json_exciseBottles))
-                if type(json_exciseBottles) == float:
+            if 'exciseBottles.bottle.@barcode' in row and not pd.isna(row['exciseBottles.bottle.@barcode']):
                     df_exciseBottles = pd.DataFrame({"@barcode": [row['exciseBottles.bottle.@barcode']],
-                                               "@exciseBarcode": [row['exciseBottles.bottle.@exciseBarcode']],
-                                               "@volume": [row['exciseBottles.bottle.@volume']],
-                                               "@price": [row['exciseBottles.bottle.@price']]})
-                else:
-                    df_exciseBottles = pd.DataFrame(json_exciseBottles)
+                                                     "@exciseBarcode": [row['exciseBottles.bottle.@exciseBarcode']],
+                                                     "@volume": [row['exciseBottles.bottle.@volume']],
+                                                     "@price": [row['exciseBottles.bottle.@price']]})
+                    df_exciseBottles['shop'] = shop
+                    df_exciseBottles['cash'] = cash
+                    df_exciseBottles['shift'] = shift
+                    df_exciseBottles['number'] = number
+                    df_exciseBottles['factorynum'] = factorynum
+                    df_exciseBottles_all = pd.concat([df_exciseBottles_all, df_exciseBottles])
             else:
-                df_exciseBottles = pd.DataFrame({"@barcode": [row['exciseBottles.bottle.@barcode']],
-                                                 "@exciseBarcode": [row['exciseBottles.bottle.@exciseBarcode']],
-                                                 "@volume": [row['exciseBottles.bottle.@volume']],
-                                                 "@price": [row['exciseBottles.bottle.@price']]})
+                if 'exciseBottles.bottle' in df_purchase.columns:
+                    json_exciseBottles = json.loads(json.dumps(row['exciseBottles.bottle'], indent=4))
 
-            df_exciseBottles['shop'] = shop
-            df_exciseBottles['cash'] = cash
-            df_exciseBottles['shift'] = shift
-            df_exciseBottles['number'] = number
-            df_exciseBottles['fiscalnum'] = fiscalnum
-
-            # Собрать оплаты в один df (чтобы потом 1 раз делать вставку в базу)
-            # print('МАРКИ')
-            # print(df_exciseBottles_all)
-            # print(df_exciseBottles)
-            df_exciseBottles_all = pd.concat([df_exciseBottles_all, df_exciseBottles])
-            # print(df_exciseBottles_all)
-
+                    if type(json_exciseBottles) == float:
+                        # Если не пусто (не NaN), то забрать марки
+                        if not pd.isna(json_exciseBottles):
+                            df_exciseBottles = pd.DataFrame({"@barcode": [row['exciseBottles.bottle.@barcode']],
+                                                             "@exciseBarcode": [
+                                                                 row['exciseBottles.bottle.@exciseBarcode']],
+                                                             "@volume": [row['exciseBottles.bottle.@volume']],
+                                                             "@price": [row['exciseBottles.bottle.@price']]})
+                            df_exciseBottles['shop'] = shop
+                            df_exciseBottles['cash'] = cash
+                            df_exciseBottles['shift'] = shift
+                            df_exciseBottles['number'] = number
+                            df_exciseBottles['factorynum'] = factorynum
+                            df_exciseBottles_all = pd.concat([df_exciseBottles_all, df_exciseBottles])
+                    else:
+                        df_exciseBottles = pd.DataFrame(json_exciseBottles)
+                        df_exciseBottles['shop'] = shop
+                        df_exciseBottles['cash'] = cash
+                        df_exciseBottles['shift'] = shift
+                        df_exciseBottles['number'] = number
+                        df_exciseBottles['factorynum'] = factorynum
+                        df_exciseBottles_all = pd.concat([df_exciseBottles_all, df_exciseBottles])
 
 
     # Чеки. Определить необходимые колонки
@@ -985,24 +1025,35 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
     df_payment_all = df_payment_all.dropna(subset=['cash'])
     # df_payment_all['plugin-property'] = df_payment_all['plugin-property'].astype(str)
 
-    print(df_purchase)
-    print(df_position_all)
-    print(df_payment_all)
-    print(df_exciseBottles_all)
-    #df_exciseBottles_all.to_excel('df_exciseBottles_all.xlsx')
-    #sys.exit()
+    # Удалить продажи, где нет марок
+    if df_exciseBottles_all is not None:
+        if not df_exciseBottles_all.empty:
+            df_exciseBottles_all = df_exciseBottles_all.dropna(subset=['exciseBarcode'])
 
-    # Забрать чеки из базы
+    # print(df_purchase)
+    # print(df_position_all)
+    # print(df_payment_all)
+    # print(df_exciseBottles_all)
+    #df_exciseBottles_all.to_excel('df_exciseBottles_all.xlsx')
+    # sys.exit()
+
+    # Забрать чеки из базы #"inn, qrcode, fiscalDocNum, factorynum, fiscalnum, CASHIER_NAME " \
     purchase_query = "select tabNumber, userName, operationType, cashOperation, operDay, " \
                      "shop, cash, shift, number, saletime, begintime, amount, discountAmount, " \
-                     "inn, qrcode, fiscalDocNum, factorynum, fiscalnum, CASHIER_NAME " \
+                     "factorynum, inn, qrcode, fiscalDocNum, fiscalnum, CASHIER_NAME " \
                      "from Crystals_Purchase " \
-                     "where convert(varchar,convert(datetime,replace(saletime,'+03:00','')),20) between '" \
-                     + str(date_begin) + "' and '" + str(date_end) + "'"
+                     "where saletime between '" + str(date_begin) + "' and '" + str(date_end) + "'"
+    # "where saletime between '2025-03-10T00:00:00' and '2025-03-10T17:58:40'"
     # "where convert(datetime,replace(operday,'+03:00','')) = '" + str(operday) + "'"
+    # "where convert(varchar,convert(datetime,replace(saletime,'+03:00','')),20) between '" \
     df_purchase_base = api_utils.select_query(purchase_query, login_sql, password_sql, server_sql, driver_sql, database)
 
+
+
     #api_utils.InsertLog('Забрали из базы продажи')
+
+    # print(df_purchase_base)
+    # sys.exit()
 
     # Убрать из даты +03:00  (2024-09-03+03:00)
     # Взять первые 10 символов из строки с датой
@@ -1016,7 +1067,11 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
         else:
             df_purchase_new = df_purchase
 
-    # df_purchase_new.to_excel("in_df_purchase_new_NEW5.xlsx")
+    df_purchase_new_key = df_purchase_new[["shop", "cash", "shift", "number", "factorynum"]]
+
+    # df_purchase_base.to_excel("df_purchase_base.xlsx")
+    # df_purchase_new.to_excel("df_purchase_new.xlsx")
+    # df_purchase.to_excel("df_purchase_all.xlsx")
 
     api_utils.InsertLog('Всего продаж c ' + str(date_begin) + ' по ' + str(date_end) +
                         ' из Crystals: ' + str(len(df_purchase)))
@@ -1024,7 +1079,13 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
                         ' в базе: ' + str(len(df_purchase_base)))
     api_utils.InsertLog('Всего продаж необходимо загрузить в базу: ' + str(len(df_purchase_new)))
 
-    #sys.exit()
+    # df_position_new.to_excel("in_df_position_new5.xlsx")
+    # df_position_all.to_excel("in_df_position_new5_all.xlsx")
+    # print(df_position_new)
+    # print(df_purchase_new_key)
+    # print(df_purchase_new)
+    # df_position_all.to_excel("df_purchase_new_25042025.xlsx")
+    # sys.exit()
 
     # Загрузить отсутствующие чеки в бд
     if df_purchase_new is not None:
@@ -1032,20 +1093,25 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
             # print(df_purchase_new)
 
             # Позиции. Оставить только те, которых нет в базе.
-            df_position_new = df_position_all.loc[df_position_all["shop"].isin(df_purchase_new['shop']) &
-                                                  df_position_all["cash"].isin(df_purchase_new['cash']) &
-                                                  df_position_all["shift"].isin(df_purchase_new['shift']) &
-                                                  df_position_all["number"].isin(df_purchase_new['number']) &
-                                                  df_position_all["fiscalnum"].isin(df_purchase_new['fiscalnum'])]
+            # df_position_new = df_position_all.loc[df_position_all["shop"].isin(df_purchase_new['shop']) &
+            #                                       df_position_all["cash"].isin(df_purchase_new['cash']) &
+            #                                       df_position_all["shift"].isin(df_purchase_new['shift']) &
+            #                                       df_position_all["number"].isin(df_purchase_new['number']) &
+            #                                       df_position_all["factorynum"].isin(df_purchase_new['factorynum'])]
+            df_position_new = df_position_all.merge(df_purchase_new_key, on=["shop", "cash", "shift", "number", "factorynum"])
             api_utils.InsertLog('Всего позиций необходимо загрузить в базу: ' + str(len(df_position_new)))
 
             # Оплаты. Оставить только те, которых нет в базе.
-            df_payment_new = df_payment_all.loc[df_payment_all["shop"].isin(df_purchase_new['shop']) &
-                                                df_payment_all["cash"].isin(df_purchase_new['cash']) &
-                                                df_payment_all["shift"].isin(df_purchase_new['shift']) &
-                                                df_payment_all["number"].isin(df_purchase_new['number']) &
-                                                df_payment_all["fiscalnum"].isin(df_purchase_new['fiscalnum'])]
+            # df_payment_new = df_payment_all.loc[df_payment_all["shop"].isin(df_purchase_new['shop']) &
+            #                                     df_payment_all["cash"].isin(df_purchase_new['cash']) &
+            #                                     df_payment_all["shift"].isin(df_purchase_new['shift']) &
+            #                                     df_payment_all["number"].isin(df_purchase_new['number']) &
+            #                                     df_payment_all["factorynum"].isin(df_purchase_new['factorynum'])]
+            df_payment_new = df_payment_all.merge(df_purchase_new_key, on=["shop", "cash", "shift", "number", "factorynum"])
             api_utils.InsertLog('Всего оплат необходимо загрузить в базу: ' + str(len(df_payment_new)))
+
+            # df_position_new.to_excel("in_df_position_new5.xlsx")
+            # df_payment_new.to_excel("in_df_payment_new5.xlsx")
             # sys.exit()
 
             # Вставка чеков
@@ -1068,16 +1134,31 @@ def getPurchasesByPeriod(url_srv, date_begin, date_end):
                                   if_exists="append")
             api_utils.InsertLog('Вставка оплат: Успешно')
 
-            # Вставка марок
+            # Марки. Оставить только те, которых нет в базе.
             if df_exciseBottles_all is not None:
-                if not df_exciseBottles_all.empty:
-                    # Удалить продажи, где нет марок
-                    df_exciseBottles_all = df_exciseBottles_all.dropna(subset=['exciseBarcode'])
+            #if not df_exciseBottles_all.empty:
+                # df_exciseBottles_new = df_exciseBottles_all.loc[df_exciseBottles_all["shop"].isin(df_purchase_new['shop']) &
+                #                                                 df_exciseBottles_all["cash"].isin(df_purchase_new['cash']) &
+                #                                                 df_exciseBottles_all["shift"].isin(
+                #                                                     df_purchase_new['shift']) &
+                #                                                 df_exciseBottles_all["number"].isin(
+                #                                                     df_purchase_new['number']) &
+                #                                                 df_exciseBottles_all["factorynum"].isin(
+                #                                                     df_purchase_new['factorynum'])]
 
-                    if not df_exciseBottles_all.empty:
-                        df_exciseBottles_all.to_sql("Crystals_Purchase_ExciseBottles", engine, index=False, chunksize=10000,
-                                              if_exists="append")
-                        api_utils.InsertLog('Вставка марок: Успешно')
+                df_exciseBottles_new = df_exciseBottles_all.merge(df_purchase_new_key, on=["shop", "cash", "shift", "number", "factorynum"])
+                api_utils.InsertLog('Всего марок необходимо загрузить в базу: ' + str(len(df_exciseBottles_new)))
+
+
+                # Вставка марок
+                if not df_exciseBottles_new.empty:
+                    df_exciseBottles_new.to_sql("Crystals_Purchase_ExciseBottles", engine, index=False, chunksize=10000,
+                                                if_exists="append")
+                    api_utils.InsertLog('Вставка марок: Успешно')
+                else:
+                    api_utils.InsertLog('Вставка марок: Успешно (марок нет)')
+            else:
+                api_utils.InsertLog('Марок нет')
 
 
 # IN. Получить продажи за операционный день
@@ -1152,8 +1233,12 @@ def getPurchasesByOperDay(url_srv, operday):
         cash = df_purchase.iloc[i]['@cash']
         shift = df_purchase.iloc[i]['@shift']
         number = df_purchase.iloc[i]['@number']
-        fiscalnum = df_purchase.iloc[i]['@fiscalnum']
-        print(shop, cash, shift, number, fiscalnum)
+
+        # STEEL от 24.04.2025 ВМЕСТО fiscalnum должен браться factorynum - "Заводской номер"
+        factorynum = df_purchase.iloc[i]['@factorynum']
+
+        #fiscalnum = df_purchase.iloc[i]['@fiscalnum']
+        print(shop, cash, shift, number, factorynum)
 
         # Свойства - взять ФИО кассира
         CASHIER_NAME = None
@@ -1176,7 +1261,7 @@ def getPurchasesByOperDay(url_srv, operday):
         df_positions['cash'] = cash
         df_positions['shift'] = shift
         df_positions['number'] = number
-        df_positions['fiscalnum'] = fiscalnum
+        df_positions['factorynum'] = factorynum
         # !!! Убрать дубликаты
         df_positions = df_positions.drop_duplicates()
 
@@ -1208,7 +1293,7 @@ def getPurchasesByOperDay(url_srv, operday):
         df_payment['cash'] = cash
         df_payment['shift'] = shift
         df_payment['number'] = number
-        df_payment['fiscalnum'] = fiscalnum
+        df_payment['factorynum'] = factorynum
 
         # print('df_payment*******',df_payment)
         # print('df_payment_FIRST*******', df_payment.groupby('@order').nth(0).reset_index())
@@ -1303,7 +1388,7 @@ def getPurchasesByOperDay(url_srv, operday):
                                               df_position_all["cash"].isin(df_purchase_new['cash']) &
                                               df_position_all["shift"].isin(df_purchase_new['shift']) &
                                               df_position_all["number"].isin(df_purchase_new['number']) &
-                                              df_position_all["fiscalnum"].isin(df_purchase_new['fiscalnum'])]
+                                              df_position_all["factorynum"].isin(df_purchase_new['factorynum'])]
         api_utils.InsertLog('Всего позиций необходимо загрузить в базу: ' + str(len(df_position_new)))
 
         # Оплаты. Оставить только те, которых нет в базе.
@@ -1311,7 +1396,7 @@ def getPurchasesByOperDay(url_srv, operday):
                                             df_payment_all["cash"].isin(df_purchase_new['cash']) &
                                             df_payment_all["shift"].isin(df_purchase_new['shift']) &
                                             df_payment_all["number"].isin(df_purchase_new['number']) &
-                                            df_payment_all["fiscalnum"].isin(df_purchase_new['fiscalnum'])]
+                                            df_payment_all["factorynum"].isin(df_purchase_new['factorynum'])]
         api_utils.InsertLog('Всего Оплат необходимо загрузить в базу: ' + str(len(df_payment_new)))
         #sys.exit()
 
@@ -1357,15 +1442,17 @@ def getZReportsByOperDay (url_srv, operday):
     result = client.service.getZReportsByOperDay(operday)
     file_xml = result.decode("utf-8")
     # print(file_xml)
-    #
-    # # Сохранить в файл
+
+    # Сохранить в файл
     # with open('z_xml', 'w', encoding='utf-8') as f:
     #     f.write(file_xml)
     #     f.close()
+    #
+    # sys.exit()
 
     # Преобразование XML в словарь
     dict_data = xmltodict.parse(file_xml)
-    print(dict_data)
+    # print(dict_data)
 
     # Количество z-отчётов
     zreport_count = dict_data.get('reports')["@count"]
@@ -1389,47 +1476,57 @@ def getZReportsByOperDay (url_srv, operday):
 
     # Соберём данные z-отчётов в один df
     for i, row in df_zreport.iterrows():
-        print(f"Index: {i}")
-        print(f"{row}\n")
+        # print(f"Index: {i}")
+        # print(f"{row}\n")
 
         # Забираем данные из дополнительных свойств (plugin-property) и добавляем в df
-        if 'plugin-property' in df_zreport.columns:
-            for j in row['plugin-property']:
-                print('key=' + j['@key'], '; value=' + j['@value'])
+        if 'plugin-property' in row: #df_zreport.columns: # STEEL от 22.05.2025 for j in row['plugin-property']: TypeError: 'float' object is not iterable
+            # print('/*/*/*/*/*/*/*/*/*/')
+            # print(row['plugin-property'])
+            # print(type(row['plugin-property']))
 
-                if j['@key'] in zreport_addcolumns:
-                    print(j['@key'] + '  ***====***', j['@value'])
-                    df_zreport.loc[i, j['@key']] = j['@value']
+            if isinstance(row['plugin-property'], float): # STEEL от 22.05.2025 Если колонка float и не пуская (не nan)
+                if not math.isnan(row['plugin-property']):
+                    for j in row['plugin-property']:
+                        #! print('key=' + j['@key'], '; value=' + j['@value'])
+
+                        if j['@key'] in zreport_addcolumns:
+                            #! print(j['@key'] + '  ***====***', j['@value'])
+                            df_zreport.loc[i, j['@key']] = j['@value']
+            else:
+                for j in row['plugin-property']:
+                    if j['@key'] in zreport_addcolumns:
+                        df_zreport.loc[i, j['@key']] = j['@value']
 
         # Забираем данные платежей
         # Если есть оплаты больше 1, то в df_purchase будет колонка 'payments.payment'
         # Если оплата только одна, то колонки 'payments.payment' не будет
         if 'payments.payment' in row:
             json_payment = json.loads(json.dumps(row['payments.payment'], indent=4))
-            print('json_payment==', json_payment)
-            print(type(json_payment))
+            #! print('json_payment==', json_payment)
+            #! print(type(json_payment))
             # Когда одновременно есть продажи с одной оплатой и с несколькими:
             # 1) Если только одна оплата - то значения в отдельных полях (при этом колонка 'payments.payment' float)
             # 2) Если несколько - то в колнке payments.payment есть данные
             if type(json_payment) == list:
                 for k in json_payment:
-                    print('k=', k)
+                    #! print('k=', k)
                     # Наличные
                     if k['@typeClass'] == 'CashPaymentEntity':
                         if '@amountPurchase' in k:
-                            print('CashPaymentEntity_amountPurchase====', k['@amountPurchase'])
+                            #! print('CashPaymentEntity_amountPurchase====', k['@amountPurchase'])
                             df_zreport.loc[i,'CashPaymentEntity_amountPurchase'] = k['@amountPurchase']
                         if '@amountReturn' in k:
-                            print('CashPaymentEntity_amountReturn====', k['@amountReturn'])
+                            #! print('CashPaymentEntity_amountReturn====', k['@amountReturn'])
                             df_zreport.loc[i, 'CashPaymentEntity_amountReturn'] = k['@amountReturn']
 
                     # Оплата картой
                     if k['@typeClass'] == 'BankCardPaymentEntity':
                         if '@amountPurchase' in k:
-                            print('BankCardPaymentEntity_amountPurchase====', k['@amountPurchase'])
+                            #! print('BankCardPaymentEntity_amountPurchase====', k['@amountPurchase'])
                             df_zreport.loc[i,'BankCardPaymentEntity_amountPurchase'] = k['@amountPurchase']
                         if '@amountReturn' in k:
-                            print('BankCardPaymentEntity_amountReturn====', k['@amountReturn'])
+                            #! print('BankCardPaymentEntity_amountReturn====', k['@amountReturn'])
                             df_zreport.loc[i, 'BankCardPaymentEntity_amountReturn'] = k['@amountReturn']
         # Может быть только 1 payment
         # Тогда не будет колонки 'payments.payment', но будут:
@@ -1439,41 +1536,41 @@ def getZReportsByOperDay (url_srv, operday):
                 # Наличные
                 if row['payments.payment.@typeClass'] == 'CashPaymentEntity':
                     if 'payments.payment.@amountPurchase' in row:
-                        print('CashPaymentEntity_amountPurchase====', row['payments.payment.@amountPurchase'])
+                        #! print('CashPaymentEntity_amountPurchase====', row['payments.payment.@amountPurchase'])
                         df_zreport.loc[i, 'CashPaymentEntity_amountPurchase'] = row['payments.payment.@amountPurchase']
                     if 'payments.payment.@amountReturn' in row:
-                        print('CashPaymentEntity_amountReturn====', row['payments.payment.@amountReturn'])
+                        #! print('CashPaymentEntity_amountReturn====', row['payments.payment.@amountReturn'])
                         df_zreport.loc[i, 'CashPaymentEntity_amountReturn'] = row['payments.payment.@amountReturn']
 
                 # Оплата картой
                 if row['payments.payment.@typeClass'] == 'BankCardPaymentEntity':
                     if 'payments.payment.@amountPurchase' in row:
-                        print('BankCardPaymentEntity_amountPurchase====', row['payments.payment.@amountPurchase'])
+                        #! print('BankCardPaymentEntity_amountPurchase====', row['payments.payment.@amountPurchase'])
                         df_zreport.loc[i, 'BankCardPaymentEntity_amountPurchase'] = row['payments.payment.@amountPurchase']
                     if 'payments.payment.@amountReturn' in row:
-                        print('BankCardPaymentEntity_amountReturn====', row['payments.payment.@amountReturn'])
+                        #! print('BankCardPaymentEntity_amountReturn====', row['payments.payment.@amountReturn'])
                         df_zreport.loc[i, 'BankCardPaymentEntity_amountReturn'] = row['payments.payment.@amountReturn']
 
         # Забираем данные сумм НДС
         if 'taxes.tax' in row:
             json_tax = json.loads(json.dumps(row['taxes.tax'], indent=4))
-            print('json_tax==', json_tax)
-            print(type(json_tax))
+            #! print('json_tax==', json_tax)
+            #! print(type(json_tax))
             if type(json_tax) == list:
                 for t in json_tax:
-                    print('t=',t)
+                    #! print('t=',t)
                     if '@nds' in t:
-                        print('nds====', t['@nds'])
+                        #! print('nds====', t['@nds'])
                         # Забирать только по актуальным НДС (tax = ('10', '20'))
                         if t['@nds'] in tax:
                             if '@ndsSumSale' in t:
-                                print(str(t['@nds']) + ', ndsSumSale====', t['@ndsSumSale'])
+                                #! print(str(t['@nds']) + ', ndsSumSale====', t['@ndsSumSale'])
                                 df_zreport.loc[i, 'nds' + str(t['@nds']) + '_ndsSumSale'] = t['@ndsSumSale']
                             if '@ndsSumReturn' in t:
-                                print(str(t['@nds']) + ', ndsSumReturn====', t['@ndsSumReturn'])
+                                #! print(str(t['@nds']) + ', ndsSumReturn====', t['@ndsSumReturn'])
                                 df_zreport.loc[i, 'nds' + str(t['@nds']) + '_ndsSumReturn'] = t['@ndsSumReturn']
                             if '@sumPosition' in t:
-                                print(str(t['@nds']) + ', sumPosition====', t['@sumPosition'])
+                                #! print(str(t['@nds']) + ', sumPosition====', t['@sumPosition'])
                                 df_zreport.loc[i, 'nds' + str(t['@nds']) + '_sumPosition'] = t['@sumPosition']
         # Может быть только 1 tax
         # Тогда не будет колонки 'taxes.tax', но будут:
@@ -1481,18 +1578,18 @@ def getZReportsByOperDay (url_srv, operday):
         else:
             if 'taxes.tax.@nds' in row:
                 nds = row['taxes.tax.@nds']
-                print('nds=', nds)
-                print(type(nds))
+                #! print('nds=', nds)
+                #! print(type(nds))
                 # Забирать только по актуальным НДС (tax = ('10', '20'))
                 if nds in tax:
                     if 'taxes.tax.@ndsSumSale' in row:
-                        print(str(nds) + ', ndsSumSale====', row['taxes.tax.@ndsSumSale'])
+                        #! print(str(nds) + ', ndsSumSale====', row['taxes.tax.@ndsSumSale'])
                         df_zreport.loc[i, 'nds' + str(nds) + '_ndsSumSale'] = row['taxes.tax.@ndsSumSale']
                     if 'taxes.tax.@ndsSumReturn' in row:
-                        print(str(nds) + ', ndsSumReturn====', row['taxes.tax.@ndsSumReturn'])
+                        #! print(str(nds) + ', ndsSumReturn====', row['taxes.tax.@ndsSumReturn'])
                         df_zreport.loc[i, 'nds' + str(nds) + '_ndsSumReturn'] = row['taxes.tax.@ndsSumReturn']
                     if 'taxes.tax.@sumPosition' in row:
-                        print(str(nds) + ', sumPosition====', row['taxes.tax.@sumPosition'])
+                        #! print(str(nds) + ', sumPosition====', row['taxes.tax.@sumPosition'])
                         df_zreport.loc[i, 'nds' + str(nds) + '_sumPosition'] = row['taxes.tax.@sumPosition']
 
     # Оставить в df только нужные колонки
@@ -1506,7 +1603,7 @@ def getZReportsByOperDay (url_srv, operday):
                         "convert(varchar(50),shopNumber) as shopNumber," \
                         "convert(varchar(50),docNumber) as docNumber," \
                         "convert(varchar(50),cashNumber) as cashNumber," \
-                        "serialCashNumber " \
+                        "factoryCashNumber " \
                         "from Crystals_ZReports " \
                         "where dateOperDay = '" + str(operday) + "'"
                         # "where convert(datetime,replace(dateOperDay,'+03:00','')) = '" + str(operday) + "'"
@@ -1518,7 +1615,7 @@ def getZReportsByOperDay (url_srv, operday):
         if not df_zreport_base.empty:
             # Соединяем даныне из Crystals с данными из базы
             df_zreport_all = pd.merge(df_zreport, df_zreport_base,
-                                      on=['shiftNumber', 'shopNumber', 'docNumber', 'cashNumber', 'serialCashNumber'],
+                                      on=['shiftNumber', 'shopNumber', 'docNumber', 'cashNumber', 'factoryCashNumber'],
                                       how="outer", indicator=True)
             #df_zreport_all.to_excel("df_zreport_all.xlsx")
 
@@ -1550,6 +1647,61 @@ def getZReportsByOperDay (url_srv, operday):
                 engine = create_engine("mssql+pyodbc:///?odbc_connect=%s" % params)
                 df_zreport_new.to_sql("Crystals_ZReports", engine, index=False, chunksize=10000, if_exists="append")
                 api_utils.InsertLog('Вставка z-отчётов: Успешно')
+
+# IN. Методы веб-сервиса для экспорта отчетов по сторно - Отбор по фильтру (<storno-events>). КИС: Удалённые позиции
+def get_stornoevents (operday):
+    url_c = url_srv + '/SET-ERPIntegration/StornoExportServiceBean?wsdl'
+    client = zeep.Client(url_c)
+    #filter = [{'shop': '29457', 'shift': '236'}]
+    filter_day = [{'operday': operday}]
+    result = client.service.getByFilter(filter_day)
+    file_xml = result.decode("utf-8")
+    # print(file_xml)
+
+    if '<storno-events>' not in file_xml:
+        return
+
+    df_storno = pd.read_xml(file_xml)
+    api_utils.InsertLog('Storno-events. Operday: ' + str(operday) +'. В Crystals всего: ' + str(len(df_storno)))
+    # df_storno.to_excel("storno-events.xlsx")
+
+    # sys.exit()
+
+    # Формируем ключ для данных из Crystals
+    df_storno_key = df_storno[["shop", "cash", "shift", "receipt-number", "event-time", "event-type", "marking"]]
+
+    # Забираем Storno-events из базы
+    purchase_query = "select shop, cash, shift, [receipt-number], [event-time], [event-type], marking " \
+                     "from Crystals_StornoEvent " \
+                     "where [event-time] between '" + str(operday) + "T00:00:00' and '" + str(operday) + "T23:59:59'"
+    df_storno_base = api_utils.select_query(purchase_query, login_sql, password_sql, server_sql, driver_sql, database)
+
+    api_utils.InsertLog('Storno-events. Operday: ' + str(operday) + '. В базе всего: ' + str(len(df_storno_base)))
+
+    # Для сравнения столбцы в обоих dataframe должны иметь один и тот же набор и порядок.
+    # https://sky.pro/wiki/python/sravnenie-pandas-data-frame-poluchenie-unikalnykh-strok/
+    # exclusive_df1 = df1[~df1['key_column'].isin(df2['key_column'])] - Совпадение по индексу
+    comparison_df = df_storno_key.merge(df_storno_base, how='left', indicator=True)
+    comparison_df_new = comparison_df[comparison_df['_merge'] == 'left_only'].drop('_merge', axis=1)
+    api_utils.InsertLog('Storno-events. Operday: ' + str(operday) + '. Необходимо вставить в базу: ' + str(len(comparison_df_new)))
+
+    # Получили ключ для новых данных
+    df_storno_new_key = comparison_df_new[["shop", "cash", "shift", "receipt-number", "event-time", "event-type", "marking"]]
+    # Забираем только новые данные (по новому ключу df_storno_new_key)
+    df_storno_new = df_storno.merge(df_storno_new_key, on=["shop", "cash", "shift", "receipt-number", "event-time", "event-type", "marking"])
+
+    if not df_storno_new.empty:
+        params = urllib.parse.quote_plus("DRIVER=" + odbc_driver + ";"
+                                         "SERVER=" + server_sql + ";"
+                                         "DATABASE=" + database + ";"
+                                         "UID=" + login_sql + ";"
+                                         "PWD=" + password_sql + ";")
+
+        engine = create_engine("mssql+pyodbc:///?odbc_connect=%s" % params)
+        df_storno_new.to_sql("Crystals_StornoEvent", engine, index=False, chunksize=10000, if_exists="append")
+        api_utils.InsertLog('Storno-events. Operday: ' + str(operday) + '. Вставка в базу: Успешно')
+
+    return
 
 
 if __name__ == '__main__':
@@ -1592,7 +1744,7 @@ if __name__ == '__main__':
             # Как часто проверять задания на прогрузку кас (по-умолчанию каждые 30 сек.)
             delay_sec_check_action = settings["delay_sec_check_action"]
 
-            # Простой приложения. Сколько секунд ждать, когда наступил новый день. Ночных продаж нет
+            # Простой приложения. Сколько секунд ждать, когда наступит новый день. Ночных продаж нет
             # if NowTime_HMS >= "00:00:00" and NowTime_HMS < '00:10:00'
             delay_sec_new_day = settings["delay_sec_new_day"]
 
@@ -1605,22 +1757,42 @@ if __name__ == '__main__':
         api_utils.CreateLogDir()
 
         startTime = datetime.datetime.now()
-        #print(startTime)
-
         MLog = startTime.strftime('%m')
         YLog = startTime.strftime('%Y')
 
-        # При первом запуске получить продажи и z-отчёты за текущий день, далее работать в цикле
+        # STEEL от 04.03.2025 продажи забираются отдельной джобой каждый час. Для ждобы с продажами:
+        # NowDT = datetime.datetime.now()
+        # dateend = (NowDT - datetime.timedelta(hours=max_hours_getPurchasesByPeriod)).strftime("%Y-%m-%dT%H:59:59.997")
+        # datebeg = (NowDT - datetime.timedelta(hours=max_hours_getPurchasesByPeriod)).strftime("%Y-%m-%dT%H:00:00")
+        # api_utils.InsertLog('Получить из Crystals продажи за период: ' + str(datebeg) + ' - ' + str(dateend))
+        # getPurchasesByPeriod(url_srv, datebeg, dateend)
+        # sys.exit()
+
+
+
+        # При первом запуске получить продажи, z-отчёты и удалённые позиции за текущий день, далее работать в цикле
         api_utils.InsertLog('START at ' + str(startTime))
-        date_begin = startTime.strftime("%Y-%m-%d")
+        date_begin = startTime.strftime("%Y-%m-%dT00:00:00")
         date_end = startTime.strftime("%Y-%m-%dT23:59:59")
-        api_utils.InsertLog(
-            'Импорт. Получаем данные о продажах из Crystals за период: ' + str(date_begin) + ' - ' + str(date_end))
+        api_utils.InsertLog('Импорт. Получаем данные о продажах из Crystals за период: ' + str(date_begin) + ' - ' + str(date_end))
         getPurchasesByPeriod(url_srv, date_begin, date_end)
+        # #getPurchasesByPeriod(url_srv, '2025-05-21T00:00:00', '2025-05-21T23:59:59')
+        # # sys.exit()
 
         time.sleep(1)
         api_utils.InsertLog('Импорт. Получаем данные z-отчётов из Crystals за операционный день: ' + str(date_begin))
         getZReportsByOperDay(url_srv, date_begin)
+
+
+        time.sleep(1)
+        api_utils.InsertLog('Импорт. Получаем данные stornoevents из Crystals за операционный день: ' + str(date_begin))
+        get_stornoevents(date_begin)
+
+
+
+
+        # sys.exit()
+
 
         # Если использовать schedule:
         # # Забрать задания из КИС (прогрузка касс, кассиров, марок)
@@ -1630,6 +1802,37 @@ if __name__ == '__main__':
         # #schedule.every(every_hours_getPurchasesByPeriod).seconds.do(do_getPurchasesByPeriod)
         # # Получить данные о z-отчётах из Crystals
         # schedule.every().day.at(last_hours_getZReportsByOperDay).do(do_getZReportsByOperDay)
+
+
+        # ВРУЧНУЮ Z-отчёты
+        # date_begin = datetime.datetime.strptime('2025-05-20', "%Y-%m-%d").date()
+        # date_end = datetime.datetime.strptime('2025-05-21', "%Y-%m-%d").date()
+        # print(date_begin, date_end)
+        #
+        # while date_begin <= date_end:
+        #     print(date_begin)
+        #     api_utils.InsertLog('Импорт. Получаем данные z-отчётов из Crystals за операционный день: ' + str(date_begin))
+        #     getZReportsByOperDay(url_srv, date_begin)
+        #     time.sleep(1)
+        #     date_begin = date_begin + datetime.timedelta(days=1)
+
+        # ВРУЧНУЮ отчёты о продажах за период!!!!
+        # api_utils.InsertLog('START at ' + str(startTime))
+        # date_begin = '2025-05-29T11:00:00'
+        # date_end = '2025-05-29T11:59:59.997'
+        # api_utils.InsertLog(
+        #     'Импорт. Получаем данные о продажах из Crystals за период: ' + str(date_begin) + ' - ' + str(date_end))
+        # getPurchasesByPeriod(url_srv, date_begin, date_end)
+        # #
+
+        # # ВРУЧНУЮ Забрать удалённые позиции за текущий день
+        # operday = datetime.datetime.now().strftime("%Y-%m-%d")
+        # get_stornoevents(operday)
+        # sys.exit()
+
+
+        # sys.exit()
+
 
         start_getPurchases = 0
         start_getZReports = 0
@@ -1684,15 +1887,27 @@ if __name__ == '__main__':
                 log.close()
 
 
+            # STEEL от 04.03.2025 продажи забираются отдельной джобой каждый час
             # IN. Получить данные о продажах
             if start_getPurchases == 1:
-                do_getPurchasesByPeriod()
+                # do_getPurchasesByPeriod()
+                # start_getPurchases = 0
+
+                NowDT = datetime.datetime.now()
+                dateend = (NowDT - datetime.timedelta(hours=max_hours_getPurchasesByPeriod)).strftime("%Y-%m-%dT%H:59:59.997")
+                datebeg = (NowDT - datetime.timedelta(hours=max_hours_getPurchasesByPeriod)).strftime("%Y-%m-%dT%H:00:00")
+                api_utils.InsertLog('Получить из Crystals продажи за период: ' + str(datebeg) + ' - ' + str(dateend))
+                getPurchasesByPeriod(url_srv, datebeg, dateend)
                 start_getPurchases = 0
 
             # IN. Получить данные о z-отчётах
             if start_getZReports == 1:
                 do_getZReportsByOperDay()
                 start_getZReports = 0
+
+                # IN. Получить удалённые позиции (<storno-events>)
+                operday_storno = datetime.datetime.now().strftime("%Y-%m-%d")
+                get_stornoevents(operday_storno)
 
 
             # !!!!!!!! - Разовый запуск
@@ -1708,8 +1923,8 @@ if __name__ == '__main__':
             # time.sleep(15)
             #
             # # IN. Получить данные о z-отчётах из Crystals - Цикл по датам
-            # date_begin = datetime.datetime.strptime('2024-11-05', "%Y-%m-%d").date()
-            # date_end = datetime.datetime.strptime('2024-11-11', "%Y-%m-%d").date()
+            # date_begin = datetime.datetime.strptime('2024-12-11', "%Y-%m-%d").date()
+            # date_end = datetime.datetime.strptime('2024-12-12', "%Y-%m-%d").date()
             # print(date_begin, date_end)
             #
             # while date_begin <= date_end:
